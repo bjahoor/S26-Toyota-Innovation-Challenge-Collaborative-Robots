@@ -40,6 +40,12 @@ PLATE_SAT_MAX = 100       # metal is grayish -> keep only pixels BELOW this satu
 PLATE_VAL_MIN = 0         # brightness window floor
 PLATE_VAL_MAX = 255       # brightness window ceiling (caps bright glints)
 
+# Red part (pick target) detection — tuned in vision_test.py
+TARGET_MIN_AREA = 300     # smallest red blob that counts as a part
+TARGET_MAX_AREA = 500     # largest red blob (rejects big things like a hand)
+TARGET_MIN_SAT = 150      # vivid-red floor (drops duller skin tones)
+TARGET_MIN_VAL = 100      # brightness floor
+
 machine_state = "scanning plate" 
 
 # --- INITIALIZATION FOR CAMERA TRANSFORMATION ---
@@ -157,14 +163,14 @@ def phase_detect_targets():
         
         # Red Tag Logic
         hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (3,3), 0), cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, np.array([0,120,70]), np.array([10,255,255])) + \
-               cv2.inRange(hsv, np.array([170,120,70]), np.array([180,255,255]))
+        mask = cv2.inRange(hsv, np.array([0,TARGET_MIN_SAT,TARGET_MIN_VAL]), np.array([10,255,255])) + \
+               cv2.inRange(hsv, np.array([170,TARGET_MIN_SAT,TARGET_MIN_VAL]), np.array([180,255,255]))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         current_list = []
         for cnt in contours:
-            if cv2.contourArea(cnt) > 800:
+            if TARGET_MIN_AREA < cv2.contourArea(cnt) < TARGET_MAX_AREA:
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])

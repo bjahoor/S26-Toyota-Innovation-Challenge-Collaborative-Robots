@@ -36,9 +36,9 @@ print("Hold the caliper in frame. Drag the 'area gate' slider to tune. Press q t
 #   min sat  = color strictness (caliper is vivid red; skin is dull -> reject)
 cv2.namedWindow("camera")
 cv2.createTrackbar("min area", "camera", 300, 2000, lambda v: None)
-cv2.createTrackbar("max area", "camera", 2000, 8000, lambda v: None)
-cv2.createTrackbar("min sat", "camera", 120, 255, lambda v: None)
-cv2.createTrackbar("min val", "camera", 70, 255, lambda v: None)
+cv2.createTrackbar("max area", "camera", 500, 8000, lambda v: None)
+cv2.createTrackbar("min sat", "camera", 150, 255, lambda v: None)
+cv2.createTrackbar("min val", "camera", 100, 255, lambda v: None)
 
 while True:
     ret, frame = cap.read()
@@ -76,7 +76,15 @@ while True:
 
     cv2.imshow("camera", frame)
     cv2.imshow("red mask", mask)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('s') or key == ord('q'):        # s = snapshot values, q = quit (also prints)
+        print("\n--- vision_test current values ---")
+        print(f"min area = {MIN_AREA}")
+        print(f"max area = {MAX_AREA}")
+        print(f"min sat = {MIN_SAT}")
+        print(f"min val = {MIN_VAL}")
+    if key == ord('q'):
         break
 
 cap.release()
