@@ -28,8 +28,17 @@ import time
 
 Z_SAFE = 40 #what is the clearance distance for the robot arm to avoid collisions when moving horizontally?
 Z_PICK = -25 #what is the  height for the robot claw to successfully pick up the target?
-STABILITY_LIMIT = 60  #how many consecutive frames of stable detection before we "lock in" the positions and move to the next phase? (at 30fps, 60 frames is about 2 seconds)
+STABILITY_LIMIT = 30  #how many consecutive frames of stable detection before we "lock in" the positions and move to the next phase? (at 30fps, 30 frames is about 1 second)
 PIXEL_TOLERANCE = 10  #object can move at most this # of pixels to be considered stationary
+
+# Drop-zone (metal tray) detection — tuned in dish_test.py, rounded to nearest 10
+PLATE_MIN_RADIUS = 25     # half of min diameter (50 px)
+PLATE_MAX_RADIUS = 50     # half of max diameter (100 px)
+PLATE_PARAM1 = 1000       # HoughCircles edge threshold (Canny high)
+PLATE_PARAM2 = 1          # HoughCircles sensitivity (low = lenient; relies on mask + diameter bracket)
+PLATE_SAT_MAX = 100       # metal is grayish -> keep only pixels BELOW this saturation
+PLATE_VAL_MIN = 0         # brightness window floor
+PLATE_VAL_MAX = 255       # brightness window ceiling (caps bright glints)
 
 machine_state = "scanning plate" 
 
@@ -87,17 +96,28 @@ def phase_detect_plates():
         frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
         display_frame = frame.copy()
         
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.medianBlur(gray, 7)
-        circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 150, param1=100, param2=35, minRadius=25, maxRadius=55)
+        # --- METAL PRE-MASK: keep only low-saturation pixels inside a brightness
+        #     window, then find the circle on that mask so other round things are
+        #     ignored (hue is irrelevant for colorless metal) ---
+        hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (3, 3), 0), cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([0, 0, PLATE_VAL_MIN]),
+                                np.array([180, PLATE_SAT_MAX, PLATE_VAL_MAX]))
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        blurred = cv2.medianBlur(mask, 7)
+
+        circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 150,
+                                   param1=PLATE_PARAM1, param2=PLATE_PARAM2,
+                                   minRadius=PLATE_MIN_RADIUS, maxRadius=PLATE_MAX_RADIUS)
 
         current_list = []
         if circles is not None:
             circles = np.uint16(np.around(circles))
-            for i in circles[0, :]:
-                cv2.circle(display_frame, (i[0], i[1]), i[2], (0, 255, 0), 2)
-                rx, ry = pixel_to_robot(i[0], i[1], H_matrix)
-                current_list.append((rx, ry))
+            i = circles[0, 0]   # only the strongest circle — there is exactly one tray
+            cv2.circle(display_frame, (i[0], i[1]), i[2], (0, 255, 0), 2)
+            rx, ry = pixel_to_robot(i[0], i[1], H_matrix)
+            current_list.append((rx, ry))
 
         # --- AUTO-LOCK LOGIC ---
         if len(current_list) > 0 and len(current_list) == last_count:
@@ -193,15 +213,13 @@ def phase_execute_batch(api, pick_list, drop_list):
         print("missing targets, aborting")
         return False
     
-    # Match 1 part to 1 drop zone (uses the smaller count)
-    batch_size = min(len(pick_list), len(drop_list))
+    # There is always exactly ONE tray -> place EVERY picked part into it
+    batch_size = len(pick_list)
     print(f"\n[PHASE 3] Executing batch of {batch_size} operations.")
 
     for i in range(batch_size):
         pick_x, pick_y = pick_list[i]
-        drop_x, drop_y = drop_list[i]
-
-        print(f"Task {i+1}: Moving {pick_x, pick_y} to {drop_x, drop_y}")
+        print(f"Task {i+1}: picking part at {pick_x, pick_y}")
 
         # --- PICK SEQUENCE ---
         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
@@ -211,6 +229,12 @@ def phase_execute_batch(api, pick_list, drop_list):
 
         dobotArm.close_gripper(api)
         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
+
+        # --- RE-DETECT THE TRAY for THIS piece (in case it moved) ---
+        # move the arm out of the camera's view first, then lock the tray fresh
+        dobotArm.move_to_home(api)
+        drop_x, drop_y = phase_detect_plates()[0]
+        print(f"Task {i+1}: tray locked at {drop_x, drop_y}, placing")
 
         # --- PLACE SEQUENCE ---
         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
