@@ -15,42 +15,6 @@ As the manufacturing landscape enters a new era of volatility, Toyota Motor Manu
 
 # Subproblems
 
-## Fault Prediction
-
-Modern manufacturing depends on hundreds of highly reliable machines working together to sustain efficiency and productivity. However, despite advanced equipment, unexpected machine downtime remains a significant issue. It costs industries millions of dollars each year through lost output, operational delays, and higher maintenance expenses.
-<br> <br>
-This challenge invites students to design and develop intelligent systems aimed at minimizing such disruptions. Participants are encouraged to explore a wide range of solutions, including Machine Learning models, sensor-based monitoring systems, or integrated robotic and sensor arrays that can continuously track machine performance.  
-<br>
-<img src="/assets/fault.png" width="20%">
-
-**Potential Solutions:**
-
-- Train an AI model using robot telemetry data to detect failure
-- Create a dashboard to monitor machine states
-- Install basic sensors on machines to assess their status
-- Design/Program testing procedures that check machine health
-
-Learn More: [Fault Prediction Subproblem](/Fault_Prediction)
-
-## Autonomous Fleet Coordination and Pathfinding
-
-AGVs (Automated Guided Vehicles) can be used together to complete tasks that would normally require multiple humans and heavy machinery. These robots are commonly used in Toyota’s manufacturing facilities to deliver parts to various places around the floor. The ideal AGV will minimize the time of delivery while ensuring the safety of workers on the floor.  
-<br>
-Your challenge is to place two robots inside an enclosed perimeter and to have them collaboratively search for a target item (3D printed car door). They should navigate to the target item and acquire it without collision and finally bring it back to the desired location.
-
-<img src="/assets/fleet.png" width="50%">
-
-**Potential solutions:**
-
-- Use robots with cameras to search the target by processing graphics
-- Set up a robot fleet using a central control server for pathfinding
-- Navigate a course, while stopping at stop signs
-- Dedicated finder/grabber robots for collaboration
-- Different robots with the same instructions
-- Identical robots with different instructions
-
-Learn More: [Autonomous Fleet Coordination Subproblem](/Autonomous_Fleets)
-
 ## Collaborative Robotics
 
 Robotics are growing increasingly common in manufacturing/warehouse settings to assist humans with various tasks. Traditionally, robots are in cages where human workers must stay out of during their operation. Toyota would like to take an innovative approach, where production workers and robots collaborate to achieve productivity boosts on their factory floor. This means that the robot and the human worker will be working on the same task but handling different parts of the task.
