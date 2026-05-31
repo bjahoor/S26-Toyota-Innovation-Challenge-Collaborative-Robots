@@ -17,6 +17,18 @@
 
 
 
+import sys
+
+# The vendored Dobot DLL prints a non-ASCII character ('：') the moment it loads,
+# which crashes under Windows' default cp1252 console encoding. Force UTF-8 on our
+# streams BEFORE importing dobotArm (its module-level dType.load() triggers that
+# print) so this runs from any terminal, not only one with PYTHONUTF8=1 set.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 import dobotArm
 import lib.DobotDllType as dType
 import numpy as np
@@ -25,6 +37,8 @@ import time
 
 
 """CONSTANTS"""
+
+CAMERA_INDEX = 1 #the Orbbec Astra Pro is camera index 1; index 0 is the laptop webcam. The calibration files (camera_params.npz / HomographyMatrix.npy) were made with the Orbbec, so we MUST read from index 1 or the undistort + pixel->robot mapping are applied to the wrong camera.
 
 Z_SAFE = 40 #what is the clearance distance for the robot arm to avoid collisions when moving horizontally?
 Z_PICK = -25 #what is the  height for the robot claw to successfully pick up the target?
@@ -51,14 +65,25 @@ machine_state = "scanning plate"
 # --- INITIALIZATION FOR CAMERA TRANSFORMATION ---
 # MAKE SURE THAT YOU HAVE RAN calibrateCamera.py FIRST TO GENERATE THE camera_params.npz FILE
 api = dType.load()
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(CAMERA_INDEX)
+if not cap.isOpened():
+    raise RuntimeError(f"Cannot open camera index {CAMERA_INDEX} (the Orbbec). "
+                       "Is it plugged in? (index 0 is the laptop webcam.)")
 H_matrix = np.load("HomographyMatrix.npy")
 data = np.load("./camera_params.npz")
 camera_matrix = data["camera_matrix"]
 dist_coeffs   = data["dist_coeffs"]
 
-# Compute undistort maps once
-ret, frame = cap.read()
+# Compute undistort maps once. The first reads off a freshly-opened camera are
+# often empty, so warm up until we get a real frame instead of crashing on
+# frame.shape when the first read returns None.
+frame = None
+for _ in range(10):
+    ret, frame = cap.read()
+    if ret and frame is not None:
+        break
+if frame is None:
+    raise RuntimeError(f"Camera index {CAMERA_INDEX} opened but returned no frames.")
 h, w = frame.shape[:2]
 new_K, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w,h), 1)
 map1, map2 = cv2.initUndistortRectifyMap(camera_matrix, dist_coeffs, None, new_K, (w,h), cv2.CV_16SC2)
@@ -99,6 +124,8 @@ def phase_detect_plates():
     
     while True:
         ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
         frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
         display_frame = frame.copy()
         
@@ -212,7 +239,8 @@ def phase_detect_targets():
 # Do you need collision avoidance? Think about if the robot gripper accidentally hits the plate or other parts on the way to the target, what would happen? How would you modify the robot's movement logic to avoid collisions?
 # ---------------------------------------------------------
 def phase_execute_batch(api, pick_list, drop_list):
-    cv2.VideoCapture(0)
+    # (Removed a stray `cv2.VideoCapture(0)` that used to be here: it opened a
+    #  second, unused camera handle on the wrong index and leaked it every batch.)
     time.sleep(0.5)
     
     if len(pick_list) == 0 or len(drop_list) == 0:
