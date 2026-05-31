@@ -47,12 +47,14 @@ cv2.createTrackbar("edge thresh",  "camera", 1000, 1000, lambda v: None)  # para
 cv2.createTrackbar("sat max",      "camera", 100, 255, lambda v: None)  # keep pixels BELOW this saturation (metal is grayish)
 cv2.createTrackbar("val min",      "camera", 0,   255, lambda v: None)  # brightness floor (accept darker metal)
 cv2.createTrackbar("val max",      "camera", 255, 255, lambda v: None)  # brightness ceiling (cap bright glints if needed)
+cv2.createTrackbar("brightness",   "camera", 34,  128, lambda v: None)  # CAMERA brightness; slider 0..128 maps to v4l2 -64..+64 (slider-64), so 34 = -30
 
 print("Point the camera at the metal tray. Tune diameter first, then the sat/val mask, then sensitivity. Press q to quit.")
 
 # stability-lock state, carried across frames
 stable_x, stable_y = 0, 0
 stability_counter = 0
+last_brightness = None   # only push brightness to the camera when it changes
 
 while True:
     ret, frame = cap.read()
@@ -66,6 +68,12 @@ while True:
     sat_max = cv2.getTrackbarPos("sat max", "camera")
     val_min = cv2.getTrackbarPos("val min", "camera")
     val_max = max(val_min + 1, cv2.getTrackbarPos("val max", "camera"))
+
+    bright = cv2.getTrackbarPos("brightness", "camera") - 64   # map 0..128 -> -64..+64
+    if bright != last_brightness:
+        cap.set(cv2.CAP_PROP_BRIGHTNESS, bright)
+        last_brightness = bright
+
     max_d = max(max_d, min_d + 2)             # keep max above min
     min_r, max_r = min_d // 2, max_d // 2     # HoughCircles works in radius
     max_r = max(max_r, min_r + 1)
@@ -124,6 +132,7 @@ while True:
         print(f"sat max = {sat_max}")
         print(f"val min = {val_min}")
         print(f"val max = {val_max}")
+        print(f"brightness = {bright}")
     if key == ord('q'):
         break
 
