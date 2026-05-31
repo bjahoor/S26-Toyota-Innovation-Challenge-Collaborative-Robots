@@ -35,15 +35,10 @@ print("Hold the caliper in frame. Drag the 'area gate' slider to tune. Press q t
 #   max area = upper size cap   (a hand is big -> reject)
 #   min sat  = color strictness (caliper is vivid red; skin is dull -> reject)
 cv2.namedWindow("camera")
-cv2.createTrackbar("min area", "camera", 30, 2000, lambda v: None)
+cv2.createTrackbar("min area", "camera", 90, 2000, lambda v: None)
 cv2.createTrackbar("max area", "camera", 500, 8000, lambda v: None)
 cv2.createTrackbar("min sat", "camera", 150, 255, lambda v: None)
 cv2.createTrackbar("min val", "camera", 100, 255, lambda v: None)
-
-# On Windows, OpenCV realizes the window on a separate GUI thread, so the window
-# isn't registered yet when the loop's first getTrackbarPos() runs -> "NULL window".
-# Pump the event loop once here so the window/trackbars exist before we read them.
-cv2.waitKey(200)
 
 while True:
     ret, frame = cap.read()
