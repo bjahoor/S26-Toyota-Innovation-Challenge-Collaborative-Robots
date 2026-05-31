@@ -104,8 +104,27 @@ def move_joint_angles(api,J1,J2,J3,J4=0):
 """
 def move_to_home(api):
     move_to_xyz(api,home_pos[0],home_pos[1],home_pos[2])
-    
-    
+
+
+"""
+    Immediately halt the arm. This is the core safety-stop primitive for the
+    reactive safety supervisor: call it the instant a hand enters the danger zone.
+
+    SetQueuedCmdForceStopExec stops whatever command is currently executing;
+    SetQueuedCmdClear then empties the queue so nothing resumes on its own.
+
+    Note on the blocking-move design: move_to_xyz() enqueues with isQueued=0 and
+    then busy-waits in `while execCmd > GetQueuedCmdCurrentIndex: dSleep(25)`.
+    Clearing the queue advances the current index past execCmd, so that wait loop
+    falls through and the blocking move returns — which is why a stop issued from a
+    watchdog thread can break a move in progress. After a stop the queue is empty,
+    so re-issue motion from a known pose before continuing the task.
+"""
+def stop_motion(api):
+    dType.SetQueuedCmdForceStopExec(api)
+    dType.SetQueuedCmdClear(api)
+
+
 def rotate_end_effector(api,angle):
     if angle <= 90 and angle >= -90:
         pose = dType.GetPose(api)

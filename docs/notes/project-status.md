@@ -6,6 +6,10 @@ A living "where are we / what's next" doc for the Collaborative Robotics work.
 For the detailed design of the chosen milestone, see
 [reactive-safety-supervisor.md](reactive-safety-supervisor.md).
 
+> ⏱️ **Demoing today (2026-05-31, 2:30 PM)?** Follow the time-boxed plan in
+> [demo-roadmap-2026-05-31.md](demo-roadmap-2026-05-31.md) — it sequences the
+> remaining work into a fallback ladder so there's always a live demo.
+
 ---
 
 ## At a glance
@@ -16,7 +20,11 @@ For the detailed design of the chosen milestone, see
 - **Existing demo:** `pickCVBlock.py` — a CV-driven pick-and-place (detect tray →
   detect red part → pick & place) that the safety layer will eventually wrap.
 - **State today:** environment is ready; the pick/place vision is tuned and
-  committed; the safety supervisor itself is **not started yet** (still at Step 0→1).
+  committed; the safety supervisor is **started** — Step 1 (`hand_detect.py`) is
+  written and **live-verified** (1190+ frames of clean single- and two-hand
+  tracking, low jitter, no false positives), and the `stop_motion` primitive
+  (Step 4) is in `dobotArm.py`. The Dobot-touching pieces are still robot-untested
+  (no arm available this session).
 - **⚠️ Do this first:** commit the uncommitted camera-index / UTF-8 / frame-guard
   fixes in `pickCVBlock.py` (committed `HEAD` still opens the wrong camera).
 
@@ -74,6 +82,23 @@ For the detailed design of the chosen milestone, see
 - **`pickCVBlock.py` full run not yet validated end-to-end** with the committed
   tuning — confirmed through Phase 1; Phase 2 → Phase 3 (actual pick & place) still
   needs a clean run-through on hardware.
+- **Uncommitted, this session (2026-05-31, robot-free):**
+  - `pickCVBlock.py` — **place-from-height bug fixed**: place sequence now descends
+    to `Z_PLACE` (new constant, defaults to `Z_PICK`) before `open_gripper`, then
+    lifts to `Z_SAFE`. Needs a hardware run to confirm the part seats cleanly.
+  - `dobotArm.py` — added **`stop_motion(api)`** (`SetQueuedCmdForceStopExec` +
+    `SetQueuedCmdClear`), the core safety-stop primitive. Code only; not yet
+    wave-to-halt tested on the arm.
+  - `hand_detect.py` — **new**: MediaPipe Tasks `HandLandmarker` wrapper
+    (`HandDetector` class → `HandResult(present, hands)`, pixel-space centroids).
+    `hand_landmarker.task` downloaded next to it. **Live-verified** via the
+    interactive preview (`python hand_detect.py 0`): 1190+ frames of clean
+    tracking — follows the hand smoothly, handles two hands at once, parks within
+    ~1–2 px when the hand is held still (low jitter → zone test won't flicker),
+    and reported zero false positives on an empty scene. Ran on the **laptop
+    webcam (index 0)** because the Orbbec (index 1) wasn't enumerating this
+    session; detection doesn't need the calibrated camera, so this fully validates
+    the module. (Re-confirm on the Orbbec at demo time.)
 
 ---
 
@@ -84,24 +109,29 @@ For the detailed design of the chosen milestone, see
 
 ### Track A — finish the pick/place demo
 - [ ] Re-run `pickCVBlock.py` end-to-end and confirm a full pick **and** place.
-- [ ] **Fix the place height bug:** the place sequence opens the gripper at
-      `Z_SAFE = 40` without descending, so the part is dropped from height. It should
-      descend (≈ `Z_PICK`) before releasing. See `phase_execute_batch`.
+- [x] **Fix the place height bug** (code, 2026-05-31) — place sequence now descends
+      to `Z_PLACE` (≈ `Z_PICK`) before `open_gripper`, then lifts to `Z_SAFE`. Still
+      needs a hardware run to confirm the part seats without jamming.
 - [ ] Review the gripper-vs-suction mix in pick/place (`close_gripper` + `stop_pump`)
       against the actual end-effector.
 - [ ] Note: the main loop runs **one** plate→target→pick/place cycle then exits.
 
 ### Track B — Reactive Safety Supervisor (the milestone) — see the plan doc
-- [ ] **Step 1** — `hand_detect.py`: wrap MediaPipe **Tasks `HandLandmarker`**
-      (download `hand_landmarker.task` first); return `(hand_present, centroid_pixel)`.
-      Standalone live-preview test.
+- [x] **Step 1** — `hand_detect.py` (code + live-verified, 2026-05-31): MediaPipe
+      **Tasks `HandLandmarker`** wrapped in a `HandDetector` class returning
+      `HandResult(present, hands)` with pixel-space centroids (+ all 21 landmarks per
+      hand for later fingertip logic). `hand_landmarker.task` downloaded. **Live
+      preview confirmed** (laptop webcam, index 0): 1190+ frames of clean single- and
+      two-hand tracking, ~1–2 px jitter when still, no false positives. Re-confirm on
+      the Orbbec (index 1) at demo time — it didn't enumerate this session.
 - [ ] **Step 2** — map hand pixel → robot frame by reusing `pixel_to_robot()` +
       `HomographyMatrix.npy`. (Table-plane homography → parallax error for a raised
       hand; fine for a conservative danger zone now.)
 - [ ] **Step 3** — `safety_supervisor.py`: state machine
       `NORMAL/SLOW/STOP/RETREAT` with zone thresholds + hysteresis. Unit-test with fake distances.
-- [ ] **Step 4** — add `stop_motion(api)` to `dobotArm.py`
-      (`SetQueuedCmdForceStopExec` + `SetQueuedCmdClear`); wave-to-halt test. **Core safety behavior.**
+- [~] **Step 4** — `stop_motion(api)` **added** to `dobotArm.py`
+      (`SetQueuedCmdForceStopExec` + `SetQueuedCmdClear`), 2026-05-31. Code done;
+      **wave-to-halt test still pending hardware.** **Core safety behavior.**
 - [ ] **Step 5** — integrate: trivial A↔B shuttle task gated by the supervisor;
       reach in → freezes, withdraw → resumes. **This alone scores the Safety milestone.**
 - [ ] **Step 6** — polish: `SLOW` speed-scaling, `RETREAT` to home, on-screen readout.

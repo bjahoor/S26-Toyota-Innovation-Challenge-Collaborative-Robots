@@ -30,10 +30,30 @@ except Exception:
     pass
 
 import dobotArm
+import grasp_orientation   # computes the gripper rotation to grab a part by its short side
 import lib.DobotDllType as dType
 import numpy as np
 import cv2
 import time
+
+# Reactive safety layer. Logic lives in its own modules (hand_detect.py /
+# safety_supervisor.py) so this script stays a thin orchestrator and the safety
+# logic is reusable + unit-tested there. If MediaPipe or the hand model is missing,
+# we degrade gracefully to the plain demo instead of crashing.
+import safety_supervisor as safety
+try:
+    from hand_detect import HandDetector
+    _HAND_OK = True
+except Exception as _e:
+    HandDetector = None
+    _HAND_OK = False
+    print(f"[safety] hand detection unavailable ({_e}); running WITHOUT the safety layer.")
+
+# How many consecutive hand-free frames before the supervisor resumes the task after
+# a STOP (~0.7 s at 30 fps). Larger = more conservative resume.
+SAFETY_CLEAR_FRAMES = 20
+# Danger-zone size as a fraction margin around the frame (0.15 -> central 70%).
+SAFETY_ZONE_MARGIN = 0.15
 
 
 """CONSTANTS"""
@@ -42,6 +62,7 @@ CAMERA_INDEX = 1 #the Orbbec Astra Pro is camera index 1; index 0 is the laptop 
 
 Z_SAFE = 40 #what is the clearance distance for the robot arm to avoid collisions when moving horizontally?
 Z_PICK = -25 #what is the  height for the robot claw to successfully pick up the target?
+Z_PLACE = Z_PICK #height to descend to before releasing over the tray. Defaults to Z_PICK (the tray bottom sits on the same table as the pick surface). Raise this a few mm if the gripper jams into the tray rim; lower it slightly if the part still drops from a height.
 STABILITY_LIMIT = 30  #how many consecutive frames of stable detection before we "lock in" the positions and move to the next phase? (at 30fps, 30 frames is about 1 second)
 PIXEL_TOLERANCE = 10  #object can move at most this # of pixels to be considered stationary
 
@@ -55,7 +76,7 @@ PLATE_VAL_MIN = 0         # brightness window floor
 PLATE_VAL_MAX = 255       # brightness window ceiling (caps bright glints)
 
 # Red part (pick target) detection — tuned in vision_test.py
-TARGET_MIN_AREA = 300     # smallest red blob that counts as a part
+TARGET_MIN_AREA = 30      # smallest red blob that counts as a part
 TARGET_MAX_AREA = 500     # largest red blob (rejects big things like a hand)
 TARGET_MIN_SAT = 150      # vivid-red floor (drops duller skin tones)
 TARGET_MIN_VAL = 100      # brightness floor
@@ -93,6 +114,74 @@ def pixel_to_robot(u, v, H):
     xy = H @ p
     xy /= xy[2]
     return xy[0], xy[1]
+
+
+# --- SAFETY LAYER SETUP (built once; reused every frame) ---
+# hand_detector is None when MediaPipe/the model is missing -> safety becomes a no-op.
+hand_detector = None
+supervisor = None
+if _HAND_OK:
+    try:
+        hand_detector = HandDetector()
+        danger_zone = safety.zone_from_frame(w, h, margin_frac=SAFETY_ZONE_MARGIN)
+        supervisor = safety.SafetySupervisor(danger_zone, clear_frames=SAFETY_CLEAR_FRAMES)
+        print(f"[safety] active. Danger zone {danger_zone} (px), "
+              f"resume after {SAFETY_CLEAR_FRAMES} clear frames.")
+    except Exception as e:
+        print(f"[safety] could not start hand detector ({e}); running WITHOUT safety.")
+        hand_detector = None
+        supervisor = None
+
+
+def safety_checkpoint(context=""):
+    """
+    Cooperative safety gate (the MVP reactive behaviour). Call this BETWEEN robot
+    motions: it blocks here as long as a hand is inside the danger zone, and returns
+    only once the zone has been clear long enough (supervisor hysteresis). Because
+    move_to_xyz is blocking, checking between hops gives a reaction latency of about
+    one hop — reach in and the arm freezes before the next move; withdraw and it
+    resumes.
+
+    No-op when the safety layer is disabled, so the plain demo is unaffected.
+    """
+    if hand_detector is None or supervisor is None:
+        return
+
+    announced = False
+    fail_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            # Camera dropped frames (the Orbbec does this intermittently). We KEEP
+            # HOLDING the arm while blind — that's the fail-safe choice — but warn so
+            # it isn't mistaken for a hang.
+            fail_count += 1
+            if fail_count % 60 == 0:
+                print("[safety] no camera frames — holding the arm (cannot see the zone).")
+            cv2.waitKey(5)
+            continue
+        fail_count = 0
+        frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
+
+        result = hand_detector.process(frame)
+        centroids = [hand.centroid for hand in result.hands]
+        supervisor.update(centroids)
+
+        display_frame = frame.copy()
+        safety.draw_overlay(display_frame, centroids, supervisor)
+        if context:
+            cv2.putText(display_frame, context, (20, h - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.imshow("Detection", display_frame)
+        cv2.waitKey(1)
+
+        if supervisor.is_safe:
+            if announced:
+                print("[safety] zone clear — resuming.")
+            return
+        if not announced:
+            print(f"[safety] HAND IN DANGER ZONE {context}— holding until clear.")
+            announced = True
 
 
 # State machine logic to control the flow of the program through the three phases: scanning for plates, scanning for targets, and executing pick/place operations.
@@ -198,13 +287,13 @@ def phase_detect_targets():
         current_list = []
         for cnt in contours:
             if TARGET_MIN_AREA < cv2.contourArea(cnt) < TARGET_MAX_AREA:
-                M = cv2.moments(cnt)
-                if M["m00"] != 0:
-                    cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
-                    rx, ry = pixel_to_robot(cx, cy, H_matrix)
-                    current_list.append((rx, ry))
-                    # Draw on display_frame only
-                    cv2.drawContours(display_frame, [cnt], -1, (0, 255, 0), 2)
+                # Pick point AND gripper rotation (grab across the short side).
+                grasp = grasp_orientation.grasp_from_contour(cnt, H_matrix)
+                if grasp is not None:
+                    rx, ry = grasp.robot_xy
+                    current_list.append((rx, ry, grasp.grip_r_deg))
+                    # Draw detection + grip orientation on display_frame only
+                    grasp_orientation.draw_grasp(display_frame, grasp)
                     
         cv2.waitKey(1)
 
@@ -252,17 +341,21 @@ def phase_execute_batch(api, pick_list, drop_list):
     print(f"\n[PHASE 3] Executing batch of {batch_size} operations.")
 
     for i in range(batch_size):
-        pick_x, pick_y = pick_list[i]
-        print(f"Task {i+1}: picking part at {pick_x, pick_y}")
+        pick_x, pick_y, pick_r = pick_list[i]
+        print(f"Task {i+1}: picking part at {pick_x, pick_y}, grip angle {pick_r:.1f} deg")
 
         # --- PICK SEQUENCE ---
-        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
-        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_PICK)
-        #optional alternate function call method to include a rotation of the gripper angle
-        #dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE, 45) 
+        # Safety gate before each descent into the work area (cooperative check
+        # between hops): if a hand is in the danger zone, hold here until it clears.
+        # Pre-rotate the gripper at safe height so the jaws are already aligned to
+        # the part's short side, then descend straight down and grab.
+        safety_checkpoint("[pick: approach]")
+        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE, pick_r)
+        safety_checkpoint("[pick: descending]")
+        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_PICK, pick_r)
 
         dobotArm.close_gripper(api)
-        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
+        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE, pick_r)
 
         # --- RE-DETECT THE TRAY for THIS piece (in case it moved) ---
         # move the arm out of the camera's view first, then lock the tray fresh
@@ -271,10 +364,13 @@ def phase_execute_batch(api, pick_list, drop_list):
         print(f"Task {i+1}: tray locked at {drop_x, drop_y}, placing")
 
         # --- PLACE SEQUENCE ---
-        dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
-        dobotArm.open_gripper(api)
+        safety_checkpoint("[place: approach]")
+        dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)   # arrive over the tray at safe height
+        safety_checkpoint("[place: descending]")
+        dobotArm.move_to_xyz(api, drop_x, drop_y, Z_PLACE)  # descend before releasing (previously released at Z_SAFE -> part dropped from height)
+        dobotArm.open_gripper(api)                           # release the part on/into the tray
         dobotArm.stop_pump(api)
-        dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
+        dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)   # lift clear
 
     # irl, it is ok for 1 dish to contain multiple parts
     # if len(pick_list) > len(drop_list):
@@ -301,28 +397,60 @@ def phase_execute_batch(api, pick_list, drop_list):
 # MAIN EXECUTION
 # contains an oversimplified state machine that runs the three phases sequentially. You can modify the logic to fit your specific use case.
 # ---------------------------------------------------------
-dobotArm.initialize_robot(api)
-dobotArm.open_gripper(api)
-dobotArm.stop_pump(api)
+errored = False
+try:
+    dobotArm.initialize_robot(api)
+    dobotArm.open_gripper(api)
+    dobotArm.stop_pump(api)
 
-while machine_state == "scanning plate":
-    drop_zone = phase_detect_plates()
-    if drop_zone is not None:
-        next_state()
-
-
-while machine_state == "scanning target":
-    pick_target = phase_detect_targets()
-    if pick_target is not None:
-        next_state()
+    while machine_state == "scanning plate":
+        drop_zone = phase_detect_plates()
+        if drop_zone is not None:
+            next_state()
 
 
-while machine_state == "pick place":
-    completed = phase_execute_batch(api, pick_target, drop_zone)
-    if completed:
-        next_state()
-    else: break
+    while machine_state == "scanning target":
+        pick_target = phase_detect_targets()
+        if pick_target is not None:
+            next_state()
 
 
-cap.release()
-cv2.destroyAllWindows()
+    while machine_state == "pick place":
+        completed = phase_execute_batch(api, pick_target, drop_zone)
+        if completed:
+            next_state()
+        else: break
+
+except KeyboardInterrupt:
+    errored = True
+    print("\nInterrupted (Ctrl+C) — stopping the arm.")
+except Exception as e:
+    errored = True
+    print(f"\nError during run: {e} — stopping the arm.")
+
+finally:
+    # --- GRACEFUL SHUTDOWN (runs on normal finish, crash, or Ctrl+C) ---
+    # Each step is guarded so one failure (e.g. the arm already gone) can't
+    # block the rest of the cleanup.
+    try:
+        if errored:
+            # Mid-motion: force-stop and clear the queue. Do NOT then issue a
+            # move — with the queue cleared/stopped it would busy-wait forever.
+            dobotArm.stop_motion(api)
+        else:
+            # Clean finish: the queue has drained, so park at the safe home pose.
+            dobotArm.move_to_home(api)
+    except Exception:
+        pass
+    try:
+        dType.DisconnectDobot(api)   # close the serial link (won't drop the arm)
+    except Exception:
+        pass
+    try:
+        if hand_detector is not None:
+            hand_detector.close()    # release the MediaPipe HandLandmarker
+    except Exception:
+        pass
+    cap.release()
+    cv2.destroyAllWindows()
+    print("Shutdown complete.")
