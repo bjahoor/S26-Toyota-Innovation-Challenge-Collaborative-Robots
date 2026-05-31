@@ -55,7 +55,7 @@ PLATE_VAL_MIN = 0         # brightness window floor
 PLATE_VAL_MAX = 255       # brightness window ceiling (caps bright glints)
 
 # Red part (pick target) detection — tuned in vision_test.py
-TARGET_MIN_AREA = 300     # smallest red blob that counts as a part
+TARGET_MIN_AREA = 90      # smallest red blob that counts as a part
 TARGET_MAX_AREA = 500     # largest red blob (rejects big things like a hand)
 TARGET_MIN_SAT = 150      # vivid-red floor (drops duller skin tones)
 TARGET_MIN_VAL = 100      # brightness floor

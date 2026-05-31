@@ -35,7 +35,7 @@ print("Hold the caliper in frame. Drag the 'area gate' slider to tune. Press q t
 #   max area = upper size cap   (a hand is big -> reject)
 #   min sat  = color strictness (caliper is vivid red; skin is dull -> reject)
 cv2.namedWindow("camera")
-cv2.createTrackbar("min area", "camera", 300, 2000, lambda v: None)
+cv2.createTrackbar("min area", "camera", 90, 2000, lambda v: None)
 cv2.createTrackbar("max area", "camera", 500, 8000, lambda v: None)
 cv2.createTrackbar("min sat", "camera", 150, 255, lambda v: None)
 cv2.createTrackbar("min val", "camera", 100, 255, lambda v: None)
